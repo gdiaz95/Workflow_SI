@@ -17,10 +17,60 @@ To activate the environment:
 poetry env activate
 ```
 Poetry will print a command in the terminal.
-Copy and paste that command and run it to activate the environment. After activation, you can run Python normally
+Copy and paste that command and run it to activate the environment. After activation, you can run Python normally.
 
 
-Simple example of how to use the synthesizer with a pandas table.
+## Synthesizer Parameters
+
+### enforce_min_max_values (bool, default=True)
+
+Intended to enforce the minimum and maximum values observed in the training data during sampling.
+
+---
+
+### epsilon (float or None, default=1.0)
+
+Controls the level of differential privacy noise applied during training.
+
+- If epsilon is None or ≤ 0 → no noise is added (non-private mode).
+- Smaller epsilon → more noise → stronger privacy → lower fidelity.
+- Larger epsilon → less noise → weaker privacy → higher fidelity.
+
+---
+
+## Method Parameters
+
+### fit(data, epsilon=None)
+
+- data: pandas DataFrame containing the real table.
+- epsilon: optional override of the model’s epsilon value for this fit call only.
+  - If None, the model uses the epsilon defined during initialization.
+
+---
+
+### sample(num_rows, seed=None)
+
+- num_rows: number of synthetic rows to generate.
+- seed: optional integer for reproducible sampling.
+  - Same seed + same fitted model → identical synthetic output.
+
+---
+
+### save(filepath)
+
+Saves the fitted model as a .pkl file.  
+The directory is created automatically if it does not exist.
+
+---
+
+### load(filepath)
+
+Loads a previously saved model from a .pkl file into the current instance.
+
+
+## Example
+
+Simple example of how to use the synthesizer with a pandas DataFrame.
 
 
 ```python
