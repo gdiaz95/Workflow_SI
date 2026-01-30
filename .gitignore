@@ -1,0 +1,11 @@
+# Python cache
+__pycache__/
+
+# Poetry virtual environment
+.venv/
+
+images/
+
+models/
+
+datasets/
