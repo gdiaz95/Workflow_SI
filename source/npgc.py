@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""
-NPGC (Non-Parametric Gaussian Copula)
+"""NPGC (Non-Parametric Gaussian Copula) synthesizer.
 
-This module implements a custom Gaussian Copula Synthesizer that uses 
-Empirical CDFs (ECDF) with specific handling for continuous, integer, 
-and categorical variables to model marginal distributions.
+This module defines the public ``NPGC`` class and its supporting private
+helpers. The implementation models marginals with empirical CDFs (ECDFs)
+and couples them through a Gaussian copula.
 """
 
 import logging
+import os
 import pickle
+from pathlib import Path
+from typing import Any
+
 import numpy as np
 import pandas as pd
-import os
 from scipy.stats import norm, rankdata
 
 __all__ = ["NPGC"]
@@ -19,31 +21,28 @@ __all__ = ["NPGC"]
 LOGGER = logging.getLogger(__name__)
 
 class NPGC:
-    """
-    NPGC synthesizer using empirical CDF (ECDF) marginals.
-    Structure inspired by SDV's GaussianCopulaSynthesizer but fully self-contained.
-    """
-    
-    def __init__(self, enforce_min_max_values=True, epsilon=1.0):
+    """Non-parametric Gaussian copula synthesizer for tabular data."""
+
+    def __init__(self, enforce_min_max_values: bool = True, epsilon: float | None = 1.0) -> None:
         self.enforce_min_max_values = enforce_min_max_values
         self.epsilon = epsilon
         self._model_state = {}
         self._fitted = False
         
-    def fit(self, data, epsilon=None):
-        """Fit the model to the table."""
+    def fit(self, data: pd.DataFrame, epsilon: float | None = None) -> None:
+        """Fit the synthesizer to a pandas DataFrame."""
         self._validate_data(data)
         eps = epsilon if epsilon is not None else self.epsilon
         LOGGER.info(f"Fitting with differential privacy epsilon={eps}...")
         LOGGER.info("Fitting NPGC...")
         
-        # 1. Learn Marginals & Transform to Z (The "Fit" step)
+        # Learn marginals and transform to Gaussian space (Z).
         self._model_state = self._learn_distributions_and_correlation(data, epsilon=eps)
         self._fitted = True
         LOGGER.info("Model fitted successfully.")
 
-    def sample(self, num_rows, seed=None):
-        """Sample the indicated number of rows from the model."""
+    def sample(self, num_rows: int, seed: int | None = None) -> pd.DataFrame:
+        """Sample synthetic rows from the fitted model."""
         if not self._fitted:
             raise RuntimeError("Model has not been fitted. Call `fit` first.")
             
@@ -52,30 +51,25 @@ class NPGC:
 
     # Persistence helpers
 
-    def save(self, filepath):
-        """
-        Save the ENTIRE object instance to a pickle file.
-        This allows sdv.load_synthesizer to work correctly.
-        Automatically creates the directory if it does not exist.
-        """
+    def save(self, filepath: str | os.PathLike[str]) -> None:
+        """Serialize this fitted model to a pickle file path."""
         if not self._fitted:
             raise RuntimeError("Model has not been fitted. Cannot save.")
 
         # Create directory if needed
-        directory = os.path.dirname(filepath)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
+        path = Path(filepath)
+        if path.parent and str(path.parent) != ".":
+            path.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(filepath, 'wb') as f:
+        with path.open("wb") as f:
             pickle.dump(self, f)
 
         LOGGER.info(f"Model saved to {filepath}")
 
-    def load(self, filepath):
-        """
-        Load the object state from a pickle file into this instance.
-        """
-        with open(filepath, 'rb') as f:
+    def load(self, filepath: str | os.PathLike[str]) -> None:
+        """Load model state from a pickle file into this instance."""
+        path = Path(filepath)
+        with path.open("rb") as f:
             # Read the pickled object
             loaded_instance = pickle.load(f)
         
@@ -95,13 +89,13 @@ class NPGC:
     # Internal Logic
     # ============================================================
 
-    def _validate_data(self, data):
+    def _validate_data(self, data: pd.DataFrame) -> None:
         if not isinstance(data, pd.DataFrame):
             raise ValueError("Data must be a pandas DataFrame.")
         if data.empty:
             raise ValueError("Data is empty.")
 
-    def _learn_distributions_and_correlation(self, df, epsilon=None):
+    def _learn_distributions_and_correlation(self, df: pd.DataFrame, epsilon: float | None = None) -> dict[str, Any]:
         """
         Learns the marginal distributions and correlation matrix with DP budget splitting.
         """
@@ -171,7 +165,7 @@ class NPGC:
             "columns": df.columns.tolist()
         }
     
-    def _get_nearest_correlation_matrix(self, matrix):
+    def _get_nearest_correlation_matrix(self, matrix: np.ndarray) -> np.ndarray:
         """
         Finds the nearest Positive Semi-Definite (PSD) matrix.
         Ensures the matrix can be used for Cholesky decomposition.
@@ -184,7 +178,7 @@ class NPGC:
         
         return new_mat
 
-    def _generate_samples(self, n_samples, seed=None):
+    def _generate_samples(self, n_samples: int, seed: int | None = None) -> pd.DataFrame:
         rng = np.random.default_rng(seed)
         
         state = self._model_state
@@ -229,7 +223,7 @@ class NPGC:
     # Math Helper Methods
     # ============================================================
     
-    def _apply_correlation(self, z_ind, corr_matrix):
+    def _apply_correlation(self, z_ind: pd.DataFrame, corr_matrix: pd.DataFrame) -> pd.DataFrame:
         try:
             L = np.linalg.cholesky(corr_matrix.values)
         except np.linalg.LinAlgError:
@@ -243,17 +237,18 @@ class NPGC:
         X_arr = z_ind.values @ L.T
         return pd.DataFrame(X_arr, columns=z_ind.columns)
 
-    def _gaussian_to_uniform(self, z):
+    def _gaussian_to_uniform(self, z: np.ndarray | pd.Series) -> np.ndarray:
         return norm.cdf(np.asarray(z, float))
 
-    def _uniform_to_gaussian(self, u):
+    def _uniform_to_gaussian(self, u: np.ndarray | pd.Series) -> np.ndarray:
         return norm.ppf(np.asarray(u, float))
     
-    def _empirical_cdf_continuous(self, column, rng, epsilon=1.0, integer_tolerance=1e-12):
+    def _empirical_cdf_continuous(self, column: pd.Series, rng: np.random.Generator, epsilon: float | None = 1.0, integer_tolerance: float = 1e-12) -> np.ndarray:
         arr = np.asarray(column, float)
         mask = ~np.isnan(arr)
         valid = arr[mask]
-        if valid.size == 0: return np.full(arr.shape, np.nan)
+        if valid.size == 0:
+            return np.full(arr.shape, np.nan)
 
         # Determine if we treat as discrete integers or continuous float
         is_int = np.allclose(valid, np.round(valid), atol=integer_tolerance)
@@ -290,7 +285,7 @@ class NPGC:
 
         return np.clip(u, 1e-12, 1 - 1e-12)
         
-    def _empirical_cdf_categorical(self, column, sorted_labels, rng, epsilon=1.0):
+    def _empirical_cdf_categorical(self, column: pd.Series, sorted_labels: list[Any], rng: np.random.Generator, epsilon: float | None = 1.0) -> np.ndarray:
         # Ensure epsilon has a default value (1.0) so it's always private unless specified
         arr = np.asarray(column, dtype=object)
         arr_filled = np.array(["<NaN>" if pd.isna(v) else v for v in arr], dtype=object)
@@ -298,7 +293,7 @@ class NPGC:
         # Include a dedicated bucket for missing values
         labels = sorted_labels + (["<NaN>"] if "<NaN>" not in sorted_labels else [])
         
-        if arr_filled.size == 0: 
+        if arr_filled.size == 0:
             return np.full(arr.shape, np.nan, dtype=float)
 
         # 1. Get raw counts
@@ -310,7 +305,7 @@ class NPGC:
         if epsilon is not None:
             # Scale noise by 1/epsilon. Sensitivity is 1.
             noise = rng.laplace(0, 1.0 / epsilon, size=len(counts))
-            counts = np.maximum(counts + noise, 1e-5) # Prevent zeros/negatives
+            counts = np.maximum(counts + noise, 1e-5)  # Prevent zeros/negatives
 
         # 3. Probabilities and Cumulative Probabilities
         p = counts / counts.sum()
@@ -327,7 +322,7 @@ class NPGC:
         # Return jittered U values
         return L_vec + rng.random(size=arr_filled.shape[0]) * p_vec
 
-    def _inverse_ecdf_integer(self, u_values, meta):
+    def _inverse_ecdf_integer(self, u_values: np.ndarray | pd.Series, meta: dict[str, Any]) -> np.ndarray:
         sorted_vals = meta['sorted_values']
         nan_frac = meta['nan_frac']
         u = np.asarray(u_values, float)
@@ -357,23 +352,25 @@ class NPGC:
             result[mask_valid] = x_cont
         return result
 
-    def _inverse_ecdf_categorical(self, u_values, meta):
+    def _inverse_ecdf_categorical(self, u_values: np.ndarray | pd.Series, meta: dict[str, Any]) -> np.ndarray:
         sorted_labels = list(meta['labels'])
         counts = list(meta['counts'])
         nan_frac = meta['nan_frac']
         if nan_frac > 0:
-            n_nan = sum(counts) * nan_frac / (1.0 - nan_frac) if sum(counts)>0 else 0
+            n_nan = sum(counts) * nan_frac / (1.0 - nan_frac) if sum(counts) > 0 else 0
             sorted_labels.append("<NaN>")
             counts.append(n_nan)
 
         u = np.asarray(u_values, float)
         out = np.full(u.shape, np.nan, dtype=object)
         mask_valid = ~np.isnan(u)
-        if not np.any(mask_valid): return out
+        if not np.any(mask_valid):
+            return out
 
         u_adj = np.clip(u[mask_valid], 0.0, 1.0 - 1e-12)
         counts_arr = np.asarray(counts, float)
-        if counts_arr.sum() <= 0: return out
+        if counts_arr.sum() <= 0:
+            return out
         P = np.cumsum(counts_arr / counts_arr.sum())
         inds = np.clip(np.searchsorted(P, u_adj, side="right"), 0, len(sorted_labels) - 1)
         chosen = np.asarray(sorted_labels, dtype=object)[inds]
@@ -381,7 +378,7 @@ class NPGC:
         out[mask_valid] = chosen
         return out
 
-    def _inverse_ecdf_continuous(self, u_values, meta):
+    def _inverse_ecdf_continuous(self, u_values: np.ndarray | pd.Series, meta: dict[str, Any]) -> np.ndarray:
         sorted_vals = meta['sorted_values']
         nan_frac = meta['nan_frac']
         u = np.asarray(u_values, float)
@@ -405,8 +402,8 @@ class NPGC:
         result[mask_valid] = self._interp_with_optional_extrapolation(u_adj, knots_u, sorted_vals)
         return result
 
-    def _interp_with_optional_extrapolation(self, u, knots_u, sorted_vals):
-        """Interpolate ECDF inverse, with optional linear tail extrapolation."""
+    def _interp_with_optional_extrapolation(self, u: np.ndarray, knots_u: np.ndarray, sorted_vals: np.ndarray) -> np.ndarray:
+        """Interpolate inverse ECDF with optional linear tail extrapolation."""
         x = np.interp(u, knots_u, sorted_vals)
         if self.enforce_min_max_values or len(sorted_vals) < 2:
             return x
