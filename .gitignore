@@ -9,3 +9,5 @@ images/
 models/
 
 datasets/
+
+.pytest_cache/  
