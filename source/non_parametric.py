@@ -24,7 +24,7 @@ class NonParamGaussianCopulaSynthesizer:
     Structure inspired by SDV's GaussianCopulaSynthesizer but fully self-contained.
     """
     
-    def __init__(self, enforce_min_max_values=True, epsilon=1.0):
+    def __init__(self, enforce_min_max_values=False, epsilon=1.0):
         self.enforce_min_max_values = enforce_min_max_values
         self.epsilon = epsilon
         self._model_state = {}
@@ -349,11 +349,14 @@ class NonParamGaussianCopulaSynthesizer:
         denom = max(1.0 - nan_frac, 1e-12)
         u_adj = np.clip(u_valid / denom, 0, 1 - 1e-8)
         knots_u = (np.arange(1, n+1) - 0.5) / n
-        x_cont = np.interp(u_adj, knots_u, sorted_vals)
+        x_cont = self._interp_with_optional_extrapolation(u_adj, knots_u, sorted_vals)
         
-        uniques = np.unique(sorted_vals)
-        diffs = np.abs(x_cont[:, None] - uniques[None, :])
-        result[mask_valid] = uniques[diffs.argmin(axis=1)]
+        if self.enforce_min_max_values:
+            uniques = np.unique(sorted_vals)
+            diffs = np.abs(x_cont[:, None] - uniques[None, :])
+            result[mask_valid] = uniques[diffs.argmin(axis=1)]
+        else:
+            result[mask_valid] = x_cont
         return result
 
     def _inverse_ecdf_categorical(self, u_values, meta):
@@ -397,7 +400,25 @@ class NonParamGaussianCopulaSynthesizer:
 
         mask_valid = ~(mask_nan | mask_cat)
         denom = max(1.0 - nan_frac, 1e-12)
-        u_adj = np.clip(u[mask_valid] / denom, 1e-8, 1 - 1e-8)
+        u_adj = u[mask_valid] / denom
+        if self.enforce_min_max_values:
+            u_adj = np.clip(u_adj, 1e-8, 1 - 1e-8)
         knots_u = (np.arange(1, n+1) - 0.5) / n
-        result[mask_valid] = np.interp(u_adj, knots_u, sorted_vals)
+        result[mask_valid] = self._interp_with_optional_extrapolation(u_adj, knots_u, sorted_vals)
         return result
+
+    def _interp_with_optional_extrapolation(self, u, knots_u, sorted_vals):
+        """Interpolate ECDF inverse, with optional linear tail extrapolation."""
+        x = np.interp(u, knots_u, sorted_vals)
+        if self.enforce_min_max_values or len(sorted_vals) < 2:
+            return x
+
+        left = u < knots_u[0]
+        right = u > knots_u[-1]
+        if np.any(left):
+            left_slope = (sorted_vals[1] - sorted_vals[0]) / max(knots_u[1] - knots_u[0], 1e-12)
+            x[left] = sorted_vals[0] + (u[left] - knots_u[0]) * left_slope
+        if np.any(right):
+            right_slope = (sorted_vals[-1] - sorted_vals[-2]) / max(knots_u[-1] - knots_u[-2], 1e-12)
+            x[right] = sorted_vals[-1] + (u[right] - knots_u[-1]) * right_slope
+        return x
