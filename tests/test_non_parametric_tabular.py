@@ -1,6 +1,11 @@
 import numpy as np
 import pandas as pd
 import pytest
+import sys
+import os
+
+# Adds the parent directory to the system path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from source.non_parametric import NonParamGaussianCopulaSynthesizer
 
@@ -89,3 +94,24 @@ def test_save_and_load_keep_model_usable(tmp_path):
 
     assert sampled.shape == (50, 3)
     assert set(sampled.columns) == {"int_col", "float_col", "cat_col"}
+
+
+def test_single_value_continuous_column_generates_mostly_same_value():
+    repeated_value = 42.5
+    train = pd.DataFrame({"only_continuous": [repeated_value] * 500})
+
+    synth = NonParamGaussianCopulaSynthesizer()
+    synth.fit(train)
+
+    sampled = synth.sample(num_rows=500, seed=21)
+
+    assert list(sampled.columns) == ["only_continuous"]
+    close_ratio = np.mean(np.isclose(sampled["only_continuous"], repeated_value, atol=1e-8))
+    assert close_ratio >= 0.95
+
+
+if __name__ == "__main__":
+    print("Running NonParamGaussianCopulaSynthesizer tests...")
+    exit_code = pytest.main([__file__, "-q"])
+    print(f"Test run completed with exit code: {exit_code}")
+    sys.exit(exit_code)
