@@ -1,4 +1,4 @@
-from .non_parametric import NonParamGaussianCopulaSynthesizer
+from .npgc import NPGC
 from .plotting import plot_marginal_original_vs_npgc
 
-__all__ = ["NonParamGaussianCopulaSynthesizer", "plot_marginal_original_vs_npgc"]
+__all__ = ["NPGC", "plot_marginal_original_vs_npgc"]

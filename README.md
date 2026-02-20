@@ -1,4 +1,4 @@
-# Non-Parametric Gaussian Copula Synthesizer
+# NPGC
 
 ## Setup (using Poetry)
 
@@ -75,13 +75,13 @@ Simple example of how to use the synthesizer with a pandas DataFrame.
 
 ```python
 import pandas as pd
-from source.non_parametric import NonParamGaussianCopulaSynthesizer
+from source import NPGC
 
 # 1) Create or load your table (must be a pandas DataFrame)
 df = pd.read_csv("your_table.csv")   # or create your own DataFrame
 
 # 2) Create the synthesizer
-synth = NonParamGaussianCopulaSynthesizer(epsilon=1.0)  
+synth = NPGC(epsilon=1.0)  
 # epsilon=None disables noise
 
 # 3) Fit the model to the real data
@@ -97,6 +97,6 @@ synthetic_df.to_csv("synthetic_data.csv", index=False)
 synth.save("npgc_model.pkl")
 
 # Optional: load a saved model
-# synth2 = NonParamGaussianCopulaSynthesizer()
+# synth2 = NPGC()
 # synth2.load("npgc_model.pkl")
 # synthetic_df = synth2.sample(1000)

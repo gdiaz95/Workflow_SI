@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Non-Parametric Gaussian Copula Synthesizer
+NPGC (Non-Parametric Gaussian Copula)
 
 This module implements a custom Gaussian Copula Synthesizer that uses 
 Empirical CDFs (ECDF) with specific handling for continuous, integer, 
@@ -14,13 +14,13 @@ import pandas as pd
 import os
 from scipy.stats import norm, rankdata
 
-__all__ = ["NonParamGaussianCopulaSynthesizer"]
+__all__ = ["NPGC"]
 
 LOGGER = logging.getLogger(__name__)
 
-class NonParamGaussianCopulaSynthesizer:
+class NPGC:
     """
-    Custom Gaussian Copula Synthesizer using Empirical CDF for marginals.
+    NPGC synthesizer using empirical CDF (ECDF) marginals.
     Structure inspired by SDV's GaussianCopulaSynthesizer but fully self-contained.
     """
     
@@ -35,7 +35,7 @@ class NonParamGaussianCopulaSynthesizer:
         self._validate_data(data)
         eps = epsilon if epsilon is not None else self.epsilon
         LOGGER.info(f"Fitting with differential privacy epsilon={eps}...")
-        LOGGER.info("Fitting NonParamGaussianCopulaSynthesizer...")
+        LOGGER.info("Fitting NPGC...")
         
         # 1. Learn Marginals & Transform to Z (The "Fit" step)
         self._model_state = self._learn_distributions_and_correlation(data, epsilon=eps)
@@ -50,9 +50,7 @@ class NonParamGaussianCopulaSynthesizer:
         LOGGER.info(f"Sampling {num_rows} rows...")
         return self._generate_samples(num_rows, seed)
 
-    # ============================================================
-    # FIXED: Save as an Object (Compatible with SDV loaders)
-    # ============================================================
+    # Persistence helpers
 
     def save(self, filepath):
         """
@@ -78,16 +76,16 @@ class NonParamGaussianCopulaSynthesizer:
         Load the object state from a pickle file into this instance.
         """
         with open(filepath, 'rb') as f:
-            # This reads the Pickled Object
+            # Read the pickled object
             loaded_instance = pickle.load(f)
         
         # If you used sdv.load_synthesizer externally, you wouldn't need this.
         # But to support model.load(), we transfer the state:
         if isinstance(loaded_instance, dict):
-            # Fallback for old 'bad' files (dictionaries)
+            # Fallback for older dictionary-based checkpoints
             self.__dict__.update(loaded_instance)
         else:
-            # Standard behavior: loaded_instance is an object
+            # Standard behavior: loaded_instance is a full object
             self.__dict__.update(loaded_instance.__dict__)
             
         self._fitted = True
@@ -132,7 +130,7 @@ class NonParamGaussianCopulaSynthesizer:
                     "dtype": dtype,
                     "dtype_name": str(dtype)
                 }
-                # Use the split budget
+                # Use the marginal privacy budget split
                 u = self._empirical_cdf_continuous(series, rng, epsilon=eps_marginal)
 
             else:
@@ -147,7 +145,7 @@ class NonParamGaussianCopulaSynthesizer:
                     "dtype": dtype,
                     "dtype_name": str(dtype)
                 }
-                # Use the split budget
+                # Use the marginal privacy budget split
                 u = self._empirical_cdf_categorical(series, sorted_labels, rng, epsilon=eps_marginal)
 
             z_df[col] = self._uniform_to_gaussian(u)
@@ -284,8 +282,8 @@ class NonParamGaussianCopulaSynthesizer:
                 cdf = np.insert(np.cumsum(noisy_counts) / (noisy_counts.sum() or 1), 0, 0)
                 u[mask] = np.interp(valid, edges, cdf)
                 if epsilon and epsilon < 0.01:
-                    print(f"DEBUG: Raw counts sum: {counts.sum()}")
-                    print(f"DEBUG: Noisy counts sum: {noisy_counts.sum()}")#################################
+                    print(f"NPGC DEBUG: Raw counts sum: {counts.sum()}")
+                    print(f"NPGC DEBUG: Noisy counts sum: {noisy_counts.sum()}")
             else:
                 # Standard Path: Fallback to exact ranks
                 u[mask] = (rankdata(valid, method='average') - 0.5) / valid.size
@@ -297,7 +295,7 @@ class NonParamGaussianCopulaSynthesizer:
         arr = np.asarray(column, dtype=object)
         arr_filled = np.array(["<NaN>" if pd.isna(v) else v for v in arr], dtype=object)
         
-        # Logic to handle labels + NaN
+        # Include a dedicated bucket for missing values
         labels = sorted_labels + (["<NaN>"] if "<NaN>" not in sorted_labels else [])
         
         if arr_filled.size == 0: 
@@ -326,7 +324,7 @@ class NonParamGaussianCopulaSynthesizer:
         p_vec = np.array([p_map.get(v, 0.0) for v in arr_filled])
         L_vec = np.array([L_map.get(v, 0.0) for v in arr_filled])
         
-        # Return the jittered U values
+        # Return jittered U values
         return L_vec + rng.random(size=arr_filled.shape[0]) * p_vec
 
     def _inverse_ecdf_integer(self, u_values, meta):

@@ -7,7 +7,7 @@ import os
 # Adds the parent directory to the system path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from source.non_parametric import NonParamGaussianCopulaSynthesizer
+from source.npgc import NPGC
 
 
 def _build_mixed_dataframe(rows: int = 200, seed: int = 7) -> pd.DataFrame:
@@ -30,7 +30,7 @@ def _build_mixed_dataframe(rows: int = 200, seed: int = 7) -> pd.DataFrame:
 
 
 def test_fit_rejects_non_dataframe_and_empty_dataframe():
-    synth = NonParamGaussianCopulaSynthesizer(epsilon=None)
+    synth = NPGC(epsilon=None)
 
     with pytest.raises(ValueError, match="Data must be a pandas DataFrame"):
         synth.fit([1, 2, 3])
@@ -41,7 +41,7 @@ def test_fit_rejects_non_dataframe_and_empty_dataframe():
 
 def test_mixed_tabular_sampling_handles_nan_integer_continuous_and_categorical():
     train = _build_mixed_dataframe(rows=300)
-    synth = NonParamGaussianCopulaSynthesizer(epsilon=None)
+    synth = NPGC(epsilon=None)
     synth.fit(train)
 
     sampled = synth.sample(num_rows=400, seed=123)
@@ -63,7 +63,7 @@ def test_mixed_tabular_sampling_handles_nan_integer_continuous_and_categorical()
 
 def test_sampling_is_reproducible_for_same_seed_on_same_fitted_model():
     train = _build_mixed_dataframe(rows=250, seed=15)
-    synth = NonParamGaussianCopulaSynthesizer(epsilon=None)
+    synth = NPGC(epsilon=None)
     synth.fit(train)
 
     sample_a = synth.sample(num_rows=150, seed=999)
@@ -73,7 +73,7 @@ def test_sampling_is_reproducible_for_same_seed_on_same_fitted_model():
 
 
 def test_sample_before_fit_raises_runtime_error():
-    synth = NonParamGaussianCopulaSynthesizer(epsilon=None)
+    synth = NPGC(epsilon=None)
 
     with pytest.raises(RuntimeError, match="Model has not been fitted"):
         synth.sample(num_rows=10, seed=1)
@@ -83,11 +83,11 @@ def test_save_and_load_keep_model_usable(tmp_path):
     train = _build_mixed_dataframe(rows=120, seed=22)
     model_path = tmp_path / "models" / "npgc.pkl"
 
-    synth = NonParamGaussianCopulaSynthesizer(epsilon=None)
+    synth = NPGC(epsilon=None)
     synth.fit(train)
     synth.save(str(model_path))
 
-    loaded = NonParamGaussianCopulaSynthesizer(epsilon=None)
+    loaded = NPGC(epsilon=None)
     loaded.load(str(model_path))
 
     sampled = loaded.sample(num_rows=50, seed=17)
@@ -100,7 +100,7 @@ def test_single_value_continuous_column_generates_mostly_same_value():
     repeated_value = 42.5
     train = pd.DataFrame({"only_continuous": [repeated_value] * 500})
 
-    synth = NonParamGaussianCopulaSynthesizer()
+    synth = NPGC()
     synth.fit(train)
 
     sampled = synth.sample(num_rows=500, seed=21)
@@ -111,7 +111,7 @@ def test_single_value_continuous_column_generates_mostly_same_value():
 
 
 if __name__ == "__main__":
-    print("Running NonParamGaussianCopulaSynthesizer tests...")
+    print("Running NPGC tests...")
     exit_code = pytest.main([__file__, "-q"])
     print(f"Test run completed with exit code: {exit_code}")
     sys.exit(exit_code)
