@@ -475,7 +475,8 @@ class NPGC:
         sorted_labels = list(meta['labels'])
         counts = list(meta['counts'])
         nan_frac = meta['nan_frac']
-        
+        u = np.asarray(u_values, float)
+        out = np.full(u.shape, np.nan, dtype=object)
         if nan_frac >= 1.0 - 1e-12:
             return out
         
