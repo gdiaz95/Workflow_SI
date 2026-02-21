@@ -117,36 +117,101 @@ class NPGC:
             dtype = series.dtype
             if pd.api.types.is_numeric_dtype(dtype):
                 is_integer = np.allclose(valid_data % 1, 0) if len(valid_data) > 0 else False
-                marginals[col] = {
-                    "type": "integer" if is_integer else "continuous",
-                    "sorted_values": np.sort(valid_data.values),
-                    "nan_frac": nan_frac,
-                    "dtype": dtype,
-                    "dtype_name": str(dtype)
-                }
-                # Use the marginal privacy budget split
+
+                # --- NEW: if DP, store DP-resampled sorted_values; else store raw sorted_values ---
+                n_valid = len(valid_data)
+                vals = valid_data.values.astype(float)
+
+                if eps_marginal is not None and eps_marginal > 0 and n_valid > 0:
+                    if is_integer:
+                        # DP integer anchors via noisy counts on unique support
+                        uniques, counts = np.unique(vals, return_counts=True)
+                        counts = counts.astype(float)
+
+                        noise = rng.laplace(0, 1.0 / eps_marginal, size=len(counts))
+                        noisy_counts = np.maximum(counts + noise, 1e-5)
+
+                        p = noisy_counts / noisy_counts.sum()
+                        dp_samples = rng.choice(uniques, size=n_valid, replace=True, p=p)
+                        sorted_values = np.sort(dp_samples)
+
+                        marginals[col] = {
+                            "type": "integer",
+                            "sorted_values": sorted_values,
+                            "nan_frac": nan_frac,
+                            "dtype": dtype,
+                            "dtype_name": str(dtype),
+                        }
+                    else:
+                        # DP continuous anchors via noisy histogram resampling
+                        counts, edges = np.histogram(vals, bins=100)
+
+                        # Handle constant column safely
+                        if edges[0] == edges[-1]:
+                            sorted_values = np.sort(np.full(n_valid, edges[0], dtype=float))
+                        else:
+                            noise = rng.laplace(0, 1.0 / eps_marginal, size=len(counts))
+                            noisy_counts = np.maximum(counts.astype(float) + noise, 0.0)
+
+                            total = noisy_counts.sum()
+                            if total <= 0:
+                                # fallback: uniform over bins if noise zeroed everything
+                                p = np.ones_like(noisy_counts) / len(noisy_counts)
+                            else:
+                                p = noisy_counts / total
+
+                            bin_idx = rng.choice(len(counts), size=n_valid, replace=True, p=p)
+                            left = edges[bin_idx]
+                            right = edges[bin_idx + 1]
+                            dp_samples = left + rng.random(n_valid) * (right - left)
+                            sorted_values = np.sort(dp_samples)
+
+                        marginals[col] = {
+                            "type": "continuous",
+                            "sorted_values": sorted_values,
+                            "nan_frac": nan_frac,
+                            "dtype": dtype,
+                            "dtype_name": str(dtype),
+                        }
+
+                else:
+                    # Non-DP: store raw empirical anchors
+                    marginals[col] = {
+                        "type": "integer" if is_integer else "continuous",
+                        "sorted_values": np.sort(vals),
+                        "nan_frac": nan_frac,
+                        "dtype": dtype,
+                        "dtype_name": str(dtype),
+                    }
+
+                # Use the marginal privacy budget split (unchanged)
                 u = self._empirical_cdf_continuous(series, rng, epsilon=eps_marginal)
 
             else:
                 sorted_labels = np.sort(valid_data.unique()).tolist()
                 val_counts = valid_data.value_counts()
-                counts_in_order = [val_counts.get(l, 0) for l in sorted_labels]
+                counts_in_order = np.array([val_counts.get(l, 0) for l in sorted_labels], dtype=float)
+
+                if eps_marginal is not None and eps_marginal > 0:
+                    noise = rng.laplace(0, 1.0 / eps_marginal, size=len(counts_in_order))
+                    counts_in_order = np.maximum(counts_in_order + noise, 1e-5)
+
                 marginals[col] = {
                     "type": "categorical",
-                    "labels": sorted_labels,
-                    "counts": counts_in_order,
+                    "labels": sorted_labels,            # NO "<NaN>"
+                    "counts": counts_in_order.tolist(), # NO "<NaN>"
                     "nan_frac": nan_frac,
                     "dtype": dtype,
-                    "dtype_name": str(dtype)
+                    "dtype_name": str(dtype),
                 }
-                # Use the marginal privacy budget split
+
                 u = self._empirical_cdf_categorical(series, sorted_labels, rng, epsilon=eps_marginal)
 
             z_df[col] = self._uniform_to_gaussian(u)
             
         correlation_matrix = z_df.corr(method='pearson').fillna(0.0)
         
-        if eps_corr:
+        if eps_corr is not None and eps_corr > 0:
             n = len(z_df)
             noise_scale = 2.0 / (n * eps_corr)
             noise = rng.laplace(0, noise_scale, size=correlation_matrix.shape)
@@ -241,7 +306,9 @@ class NPGC:
         return norm.cdf(np.asarray(z, float))
 
     def _uniform_to_gaussian(self, u: np.ndarray | pd.Series) -> np.ndarray:
-        return norm.ppf(np.asarray(u, float))
+        u = np.asarray(u, float)
+        u = np.clip(u, 1e-12, 1 - 1e-12)
+        return norm.ppf(u)
     
     def _empirical_cdf_continuous(self, column: pd.Series, rng: np.random.Generator, epsilon: float | None = 1.0, integer_tolerance: float = 1e-12) -> np.ndarray:
         arr = np.asarray(column, float)
@@ -257,7 +324,7 @@ class NPGC:
         if is_int:
             uniques, counts = np.unique(valid, return_counts=True)
             counts = counts.astype(float)
-            if epsilon:
+            if epsilon is not None and epsilon > 0:
                 noise = rng.laplace(0, 1.0 / epsilon, size=len(counts))
                 counts = np.maximum(counts + noise, 1e-5)
                 
@@ -270,57 +337,107 @@ class NPGC:
             indices = np.array([idx_map[v] for v in valid])
             u[mask] = L[indices] + rng.random(valid.size) * p[indices]
         else:
-            if epsilon:
+            if epsilon is not None and epsilon > 0:
                 # DP Path: Noisy Histograms provide a bounded-sensitivity ECDF
                 counts, edges = np.histogram(valid, bins=100)
-                noisy_counts = np.maximum(counts + rng.laplace(0, 1/epsilon, size=100), 0)
-                cdf = np.insert(np.cumsum(noisy_counts) / (noisy_counts.sum() or 1), 0, 0)
-                u[mask] = np.interp(valid, edges, cdf)
-                if epsilon and epsilon < 0.01:
+                if edges[0] == edges[-1]:
+                    u[mask] = rng.random(valid.size)
+                    return np.clip(u, 1e-12, 1 - 1e-12)
+                noisy_counts = np.maximum(counts + rng.laplace(0, 1/epsilon, size=100), 0.0)
+                total = noisy_counts.sum()
+
+                if total <= 0:
+                    # extremely unlikely, but avoids divide-by-zero; keeps U valid
+                    u[mask] = rng.random(valid.size)
+                else:
+                    p = noisy_counts / total                  # bin probabilities
+                    P = np.cumsum(p)                          # right CDF at each bin
+                    L = np.insert(P[:-1], 0, 0.0)             # left CDF at each bin
+
+                    # which bin each value falls into
+                    bin_idx = np.searchsorted(edges, valid, side="right") - 1
+                    bin_idx = np.clip(bin_idx, 0, len(p) - 1)
+
+                    # randomized PIT inside the bin mass
+                    u[mask] = L[bin_idx] + rng.random(valid.size) * p[bin_idx]
+                if epsilon is not None and epsilon > 0 and epsilon < 0.01:
                     print(f"NPGC DEBUG: Raw counts sum: {counts.sum()}")
                     print(f"NPGC DEBUG: Noisy counts sum: {noisy_counts.sum()}")
             else:
-                # Standard Path: Fallback to exact ranks
-                u[mask] = (rankdata(valid, method='average') - 0.5) / valid.size
+                # Standard Path: randomized PIT (ties -> uniform; constant column -> uniform)
+                r_min = rankdata(valid, method="min")
+                r_max = rankdata(valid, method="max")
+                v = rng.random(valid.size)
+                u[mask] = (r_min - 1 + v * (r_max - r_min + 1)) / valid.size
 
         return np.clip(u, 1e-12, 1 - 1e-12)
         
-    def _empirical_cdf_categorical(self, column: pd.Series, sorted_labels: list[Any], rng: np.random.Generator, epsilon: float | None = 1.0) -> np.ndarray:
-        # Ensure epsilon has a default value (1.0) so it's always private unless specified
+    def _empirical_cdf_categorical(
+        self,
+        column: pd.Series,
+        sorted_labels: list[Any],
+        rng: np.random.Generator,
+        epsilon: float | None = 1.0,
+    ) -> np.ndarray:
+        """
+        Categorical ECDF that is consistent with _inverse_ecdf_categorical:
+
+        - meta['labels']/meta['counts'] exclude NaN
+        - meta['nan_frac'] controls missingness mass
+        - Non-missing categories occupy [0, 1 - nan_frac)
+        - Missing values map into (1 - nan_frac, 1)
+        """
         arr = np.asarray(column, dtype=object)
-        arr_filled = np.array(["<NaN>" if pd.isna(v) else v for v in arr], dtype=object)
-        
-        # Include a dedicated bucket for missing values
-        labels = sorted_labels + (["<NaN>"] if "<NaN>" not in sorted_labels else [])
-        
-        if arr_filled.size == 0:
-            return np.full(arr.shape, np.nan, dtype=float)
+        is_nan = pd.isna(arr)
+        n = arr.shape[0]
 
-        # 1. Get raw counts
-        uniq, cnt = np.unique(arr_filled, return_counts=True)
+        u = np.full(n, np.nan, dtype=float)
+        nan_frac = float(np.mean(is_nan))  # same as series.isna().mean()
+
+        # If everything is NaN, map all to the top mass
+        if np.all(is_nan):
+            u[:] = 1.0 - rng.random(n) * max(nan_frac, 1e-12)
+            return np.clip(u, 1e-12, 1 - 1e-12)
+
+        # ---- non-missing part ----
+        vals = arr[~is_nan]
+        if vals.size == 0:
+            return np.clip(u, 1e-12, 1 - 1e-12)
+
+        # counts aligned with sorted_labels (which already excludes NaN)
+        uniq, cnt = np.unique(vals, return_counts=True)
         count_map = dict(zip(uniq, cnt))
-        counts = np.array([count_map.get(l, 0) for l in labels], dtype=float)
+        counts = np.array([count_map.get(l, 0) for l in sorted_labels], dtype=float)
 
-        # 2. Apply DP Noise
-        if epsilon is not None:
-            # Scale noise by 1/epsilon. Sensitivity is 1.
+        # DP noise on category counts (if epsilon enabled)
+        if epsilon is not None and epsilon > 0:
             noise = rng.laplace(0, 1.0 / epsilon, size=len(counts))
-            counts = np.maximum(counts + noise, 1e-5)  # Prevent zeros/negatives
+            counts = np.maximum(counts + noise, 1e-5)
 
-        # 3. Probabilities and Cumulative Probabilities
-        p = counts / counts.sum()
+        # convert to probabilities over the NON-MISSING support
+        total = counts.sum()
+        if total <= 0:
+            p = np.ones_like(counts) / len(counts)
+        else:
+            p = counts / total
+
         P = np.cumsum(p)
-        L = np.insert(P[:-1], 0, 0)
-        
-        # 4. Map back to vectors
-        p_map = dict(zip(labels, p))
-        L_map = dict(zip(labels, L))
-        
-        p_vec = np.array([p_map.get(v, 0.0) for v in arr_filled])
-        L_vec = np.array([L_map.get(v, 0.0) for v in arr_filled])
-        
-        # Return jittered U values
-        return L_vec + rng.random(size=arr_filled.shape[0]) * p_vec
+        L = np.insert(P[:-1], 0, 0.0)
+
+        # map each observed value to its interval [L_i, L_i+p_i)
+        idx_map = {lab: i for i, lab in enumerate(sorted_labels)}
+        indices = np.array([idx_map[v] for v in vals], dtype=int)
+
+        u_nonmiss_unit = L[indices] + rng.random(vals.size) * p[indices]  # in [0,1)
+        # scale into [0, 1 - nan_frac)
+        u[~is_nan] = u_nonmiss_unit * max(1.0 - nan_frac, 0.0)
+
+        # ---- missing part ----
+        if nan_frac > 0:
+            # put NaNs into the top mass (1 - nan_frac, 1)
+            u[is_nan] = 1.0 - rng.random(is_nan.sum()) * nan_frac
+
+        return np.clip(u, 1e-12, 1 - 1e-12)
 
     def _inverse_ecdf_integer(self, u_values: np.ndarray | pd.Series, meta: dict[str, Any]) -> np.ndarray:
         sorted_vals = meta['sorted_values']
@@ -328,6 +445,8 @@ class NPGC:
         u = np.asarray(u_values, float)
         n = len(sorted_vals)
         result = np.full(u.shape, np.nan, dtype=float)
+        if n == 0:
+            return result
         mask_nan = np.isnan(u)
         result[mask_nan] = np.nan
 
@@ -356,6 +475,10 @@ class NPGC:
         sorted_labels = list(meta['labels'])
         counts = list(meta['counts'])
         nan_frac = meta['nan_frac']
+        
+        if nan_frac >= 1.0 - 1e-12:
+            return out
+        
         if nan_frac > 0:
             n_nan = sum(counts) * nan_frac / (1.0 - nan_frac) if sum(counts) > 0 else 0
             sorted_labels.append("<NaN>")
@@ -384,6 +507,8 @@ class NPGC:
         u = np.asarray(u_values, float)
         n = len(sorted_vals)
         result = np.full(u.shape, np.nan, dtype=float)
+        if n == 0:
+            return result
         mask_nan = np.isnan(u)
         result[mask_nan] = np.nan
 
