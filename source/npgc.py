@@ -396,7 +396,6 @@ class NPGC:
 
         # If everything is NaN, map all to the top mass
         if np.all(is_nan):
-            u[:] = 1.0 - rng.random(n) * max(nan_frac, 1e-12)
             return np.clip(u, 1e-12, 1 - 1e-12)
 
         # ---- non-missing part ----
@@ -485,8 +484,6 @@ class NPGC:
             sorted_labels.append("<NaN>")
             counts.append(n_nan)
 
-        u = np.asarray(u_values, float)
-        out = np.full(u.shape, np.nan, dtype=object)
         mask_valid = ~np.isnan(u)
         if not np.any(mask_valid):
             return out
